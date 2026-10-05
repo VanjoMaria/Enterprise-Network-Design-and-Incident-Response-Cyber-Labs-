@@ -1,0 +1,136 @@
+# Incident Ticket — INC-004
+
+| Field | Detail |
+|---|---|
+| **Ticket ID** | INC-004 |
+| **Title** | Unauthorized device connected to a port-secured access link |
+| **Reported by** | Network Engineer (deliberate fault injection) |
+| **Affected segment** | IT VLAN (VLAN 20), Switch1, port FastEthernet0/4 |
+| **Severity** | Medium (simulated) — validates physical access control at the edge |
+| **Status** | Resolved — port security confirmed detecting and blocking the unauthorized device |
+
+---
+
+## Summary
+
+The authorized PC on Switch1's FastEthernet0/4 was disconnected and replaced with a different, unauthorized device (PC8), to confirm that port security detects the MAC address change and automatically disables the port — preventing network access from any device other than the one originally authorized, exactly as required: *"someone unplugging a PC and plugging in their own laptop should not get network access."*
+
+---
+
+## Diagnostic Steps & Evidence
+
+### 1. Baseline — confirm port security is active and has learned the authorized device
+
+```
+Switch(config)#do sh port-security int fa0/4
+Port Security              : Enabled
+Port Status                : Secure-up
+Violation Mode             : Shutdown
+Maximum MAC Addresses      : 1
+Total MAC Addresses        : 1
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : 00D0.BA84.6C63:20
+Security Violation Count   : 0
+```
+Port security is active, in `Secure-up` status, with the legitimate device's MAC address (`00D0.BA84.6C63`) learned and locked via sticky learning. Zero violations recorded — normal operating state.
+
+### 2. Fault injection — swap the authorized device for an unauthorized one
+
+The original device was unplugged from Fa0/4, and PC8 (a different device, MAC `00D0.BC1A.DD48`) was connected to the same port.
+
+```
+%LINK-3-UPDOWN: Interface FastEthernet0/4, changed state to down
+%LINEPROTO-5-UPDOWN: Line protocol on Interface FastEthernet0/4, changed state to down
+%LINK-5-CHANGED: Interface FastEthernet0/4, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface FastEthernet0/4, changed state to up
+```
+The link cycled down/up as expected from the physical swap. At this point the port is simply back up — the violation has not yet been triggered, since port security evaluates on actual traffic from the new device, not on link-up alone:
+```
+Port Status                : Secure-up
+Last Source Address:Vlan   : 00D0.BA84.6C63:20   ! still shows the old MAC — no traffic from PC8 yet
+Security Violation Count   : 0
+```
+
+### 3. Generate traffic from the unauthorized device and confirm the violation fires
+
+Once PC8 sent traffic (attempted DHCP/ping), the switch detected a MAC address not matching the sticky-learned entry:
+```
+%LINK-5-CHANGED: Interface FastEthernet0/4, changed state to administratively down
+%LINEPROTO-5-UPDOWN: Line protocol on Interface FastEthernet0/4, changed state to down
+
+Switch(config)#do sh port-security int fa0/4
+Port Status                : Secure-shutdown
+Last Source Address:Vlan   : 00D0.BC1A.DD48:20   ! the new, unauthorized device's MAC
+Security Violation Count   : 1
+```
+The port status flipped to `Secure-shutdown` — Cisco's err-disabled state for a port-security violation — and the violation count incremented to 1, correctly identifying PC8's MAC as the offending address.
+
+### 4. Confirm the interface itself is fully down, not just flagged
+
+```
+Switch(config)#do sh int fa0/4 status
+Port     Name    Status        Vlan    Duplex  Speed  Type
+Fa0/4            err-disabled  20      auto    auto   10/100BaseTX
+```
+The port is genuinely `err-disabled` — not merely logging a warning while still passing traffic.
+
+### 5. Confirm the unauthorized device has zero network access
+
+From PC8:
+```
+C:\>ipconfig /release
+   IP Address...: 0.0.0.0
+
+C:\>ipconfig /renew
+   DHCP request failed.
+
+C:\>ping 10.10.20.2
+   Request timed out.
+   Request timed out.
+   Request timed out.
+   Request timed out.
+   Packets: Sent = 4, Received = 0, Lost = 4 (100% loss)
+```
+PC8 cannot obtain an IP address and cannot reach its gateway at all — complete network isolation, confirming the port shutdown is fully effective at blocking access, not just logging the event.
+
+### 6. Recover the port
+
+```
+Switch(config)#int fa0/4
+Switch(config-if)#shutdown
+Switch(config-if)#no shutdown
+
+%LINK-5-CHANGED: Interface FastEthernet0/4, changed state to up
+%LINEPROTO-5-UPDOWN: Line protocol on Interface FastEthernet0/4, changed state to up
+
+Switch(config-if)#do sh int fa0/4 status
+Fa0/4    connected    20    auto    auto    10/100BaseTX
+
+Switch(config-if)#do sh port-security int fa0/4
+Port Status                : Secure-up
+Sticky MAC Addresses       : 1
+Last Source Address:Vlan   : 00D0.BC1A.DD48:20
+Security Violation Count   : 0
+```
+A manual `shutdown` / `no shutdown` cycle was required to clear the err-disabled state (port security does not self-recover). After recovery, the switch re-learned whichever device is currently connected (PC8's MAC, since it remained plugged in) as the new authorized sticky address, and the violation counter reset to 0.
+
+---
+
+## Root Cause (of the simulated scenario)
+
+Not applicable — deliberate fault injection to validate existing port security configuration, not an unplanned incident.
+
+---
+
+## Resolution
+
+No remediation beyond the standard manual port recovery (`shutdown` / `no shutdown`) was required. Port security, configured with `maximum 1`, `sticky` MAC learning, and `violation shutdown`, correctly detected the unauthorized device's differing MAC address the moment it generated traffic, transitioned the port to `err-disabled`, and fully blocked all network access for that device — directly satisfying the requirement that swapping a connected PC for an unauthorized device should not yield network access.
+
+---
+
+## Prevention / Design Notes
+
+- This test validates requirement: *"Only authorized devices may use each access port — someone unplugging a PC and plugging in their own laptop should not get network access."*
+- `violation shutdown` (rather than `restrict` or `protect`) was the correct choice here: it produces a clear, loud, auditable event (`err-disabled`, syslog entry, violation counter) rather than silently dropping the unauthorized device's traffic — which is exactly the kind of event that needs to reach IT/the NOC quickly, per the monitoring requirement.
+- **Important operational note confirmed by this test:** port security does **not** self-recover after a violation — a manual `shutdown`/`no shutdown` is required. In a real deployment, this should be paired with either (a) a documented runbook step for front-line support staff, or (b) Cisco's `errdisable recovery` feature, which can be configured to automatically re-enable a port after a defined timeout — worth evaluating for production use to reduce manual intervention for routine cases (while still logging/alerting on the event).
+- **Also worth noting:** after recovery, the switch re-learned the *currently connected* device (PC8) as the new authorized sticky MAC, not the original device. In production, restoring the original authorized device after an incident like this should include clearing the port security configuration (`clear port-security sticky`) and re-learning the correct device — otherwise the "wrong" device remains implicitly re-authorized.
