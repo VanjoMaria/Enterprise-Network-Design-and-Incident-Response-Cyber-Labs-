@@ -1,0 +1,54 @@
+! =====================================================================
+! Cyber Labs — ISP Simulator (1941)
+! Represents external internet infrastructure OUTSIDE Cyber Lab's admin
+! boundary. Deliberately NOT configured with Cyber Lab's SSH/SNMP/syslog/
+! domain settings, since a real ISP router would not be managed by us.
+! Loopback0 (8.8.8.8) stands in for a real internet destination to test
+! NAT and general internet reachability against.
+! =====================================================================
+
+hostname ISP
+!
+no ip cef
+no ipv6 cef
+!
+spanning-tree mode pvst
+!
+! ---------------------------------------------------------------------
+! Interfaces
+! ---------------------------------------------------------------------
+interface Loopback0
+ description Simulated-internet-destination
+ ip address 8.8.8.8 255.255.255.255
+!
+interface GigabitEthernet0/0
+ description Unused-spare
+ no ip address
+ duplex auto
+ speed auto
+ shutdown
+!
+interface GigabitEthernet0/1
+ description Unused-spare
+ no ip address
+ duplex auto
+ speed auto
+ shutdown
+!
+interface Serial0/0/0
+ description Link-to-EdgeRouter
+ ip address 203.0.113.2 255.255.255.252
+!
+interface Serial0/0/1
+ description Unused-spare
+ no ip address
+ clock rate 2000000
+ shutdown
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+ip classless
+!
+end
