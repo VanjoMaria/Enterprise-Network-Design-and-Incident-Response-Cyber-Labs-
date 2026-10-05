@@ -1,0 +1,132 @@
+! =====================================================================
+! Cyber Labs — Core Switch B (3560-24PS)
+! HSRP: Active for Finance (VLAN 30), Standby for Sales (VLAN 10) and IT (VLAN 20)
+! =====================================================================
+
+hostname CoreB
+!
+ip routing
+!
+service timestamps log datetime msec
+!
+ip domain-name Cyber.labs
+username admin privilege 15 secret 5 $1$mERr$Pq3/lr0agnISq0fxb9TUZ0
+!
+ip ssh version 2
+line con 0
+line aux 0
+line vty 0 4
+ login local
+ transport input ssh
+line vty 5 15
+ login local
+ transport input ssh
+!
+spanning-tree mode pvst
+!
+! ---------------------------------------------------------------------
+! DHCP — standby server for all three HQ VLANs (same pools as Core A,
+! active only when Core A is unavailable)
+! ---------------------------------------------------------------------
+ip dhcp relay information trust-all
+!
+ip dhcp excluded-address 10.10.10.1 10.10.10.5
+ip dhcp excluded-address 10.10.10.200 10.10.10.254
+ip dhcp excluded-address 10.10.20.1 10.10.20.5
+ip dhcp excluded-address 10.10.20.200 10.10.20.254
+ip dhcp excluded-address 10.10.30.1 10.10.30.5
+ip dhcp excluded-address 10.10.30.200 10.10.30.254
+!
+ip dhcp pool SALES
+ network 10.10.10.0 255.255.255.0
+ default-router 10.10.10.2
+ dns-server 8.8.8.8
+ip dhcp pool IT
+ network 10.10.20.0 255.255.255.0
+ default-router 10.10.20.2
+ dns-server 8.8.8.8
+ip dhcp pool FINANCE
+ network 10.10.30.0 255.255.255.0
+ default-router 10.10.30.2
+ dns-server 8.8.8.8
+!
+! ---------------------------------------------------------------------
+! Interfaces
+! ---------------------------------------------------------------------
+interface FastEthernet0/1
+ description Link-to-CoreA
+ no switchport
+ ip address 10.10.99.2 255.255.255.252
+ duplex auto
+ speed auto
+!
+interface FastEthernet0/2
+ description Link-to-EdgeRouter
+ no switchport
+ ip address 10.255.255.5 255.255.255.252
+ duplex auto
+ speed auto
+!
+interface FastEthernet0/3
+ description Trunk-to-AccessSwitches
+ switchport trunk encapsulation dot1q
+ switchport trunk native vlan 99
+ switchport trunk allowed vlan 10,20,30,99
+ switchport mode trunk
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+interface Vlan10
+ mac-address 0060.2f41.3601
+ ip address 10.10.10.3 255.255.255.0
+ ip access-group BLK-SALES-TO-FINANCE in
+ standby 10 ip 10.10.10.2
+!
+interface Vlan20
+ mac-address 0060.2f41.3602
+ ip address 10.10.20.3 255.255.255.0
+ standby 20 ip 10.10.20.2
+!
+interface Vlan30
+ mac-address 0060.2f41.3603
+ ip address 10.10.30.3 255.255.255.0
+ ip access-group BLK-FIN-TO-SALES in
+ standby 30 ip 10.10.30.2
+ standby 30 priority 110
+ standby 30 preempt
+!
+! ---------------------------------------------------------------------
+! Routing — OSPF Area 0
+! ---------------------------------------------------------------------
+router ospf 1
+ log-adjacency-changes
+ passive-interface Vlan10
+ passive-interface Vlan20
+ passive-interface Vlan30
+ network 10.255.255.4 0.0.0.3 area 0
+ network 10.10.99.0 0.0.0.3 area 0
+ network 10.10.10.0 0.0.0.255 area 0
+ network 10.10.20.0 0.0.0.255 area 0
+ network 10.10.30.0 0.0.0.255 area 0
+!
+ip classless
+!
+! ---------------------------------------------------------------------
+! ACLs — Sales/Finance mutual isolation (IT unrestricted to both)
+! ---------------------------------------------------------------------
+ip access-list extended BLK-SALES-TO-FINANCE
+ deny ip 10.10.10.0 0.0.0.255 10.10.30.0 0.0.0.255
+ permit ip any any
+ip access-list extended BLK-FIN-TO-SALES
+ deny ip 10.10.30.0 0.0.0.255 10.10.10.0 0.0.0.255
+ permit ip any any
+!
+! ---------------------------------------------------------------------
+! Monitoring
+! ---------------------------------------------------------------------
+snmp-server community CYBERLABS.RO RO
+logging host 10.10.20.50
+!
+end
