@@ -1,0 +1,124 @@
+# Incident Ticket — INC-003
+
+| Field | Detail |
+|---|---|
+| **Ticket ID** | INC-003 |
+| **Title** | Rogue DHCP server on an access port — DHCP snooping protection validation |
+| **Reported by** | Network Engineer (deliberate fault injection — recreating the original Sales VLAN incident) |
+| **Affected segment** | Sales VLAN (VLAN 10), Switch0 access layer |
+| **Severity** | High (simulated) — this is a direct re-creation of the incident that originally motivated this redesign |
+| **Status** | Resolved — DHCP snooping confirmed blocking unauthorized DHCP servers |
+
+---
+
+## Summary
+
+A rogue router, deliberately configured to act as an unauthorized DHCP server, was connected to an **unused, untrusted access port** on Switch0 — recreating the exact real-world incident that started this redesign (*"an employee accidentally plugged in a personal wireless router that handed out its own DHCP leases, breaking connectivity for a dozen users on the Sales VLAN"*). A legitimate client on the same VLAN, on a different port, then repeatedly released and renewed its DHCP lease to confirm it could never receive an address from the rogue device.
+
+---
+
+## Setup
+
+- **Rogue-Device** (Router-PT) connected to an unused access port on Switch0 (Sales VLAN 10), with a deliberately incorrect DHCP pool:
+  ```
+  ip dhcp pool ROGUE-SALES
+   network 10.10.10.0 255.255.255.0
+   default-router 10.10.10.99
+   dns-server 1.1.1.1
+  ```
+  (Default gateway and DNS intentionally set to values that do **not** match the legitimate configuration, so any successful rogue lease would be immediately obvious.)
+- **Legitimate DHCP server** remains Core A, serving the real `SALES` pool with `default-router 10.10.10.2` and `dns-server 8.8.8.8`.
+- **Test client:** PC5, on a separate port on the same switch/VLAN.
+
+---
+
+## Diagnostic Steps & Evidence
+
+### 1. Confirm DHCP snooping baseline on Switch0
+
+```
+Switch(config)#do sh ip dhcp snooping
+Switch DHCP snooping is enabled
+DHCP snooping is configured on following VLANs:
+10,20,30
+Insertion of option 82 is enabled
+Option 82 on untrusted port is not allowed
+Verification of hwaddr field is enabled
+
+Interface              Trusted   Rate limit (pps)
+---------------------- -------   ----------------
+FastEthernet0/1        yes       unlimited
+FastEthernet0/2        yes       unlimited
+FastEthernet0/3        no        unlimited
+FastEthernet0/4        no        unlimited
+FastEthernet0/5        yes       unlimited
+```
+Only the infrastructure-facing ports (Fa0/1, 0/2, 0/5 — uplinks to cores/peer switches) are trusted. PC-facing ports (Fa0/3, 0/4) are untrusted, as required — this is exactly where the rogue device and legitimate clients connect.
+
+### 2. Confirm the legitimate client's lease before the rogue device is active
+
+```
+C:\>ipconfig
+IPv4 Address...: 10.10.10.6
+Default Gateway...: 10.10.10.2
+
+C:\>ipconfig /release
+C:\>ipconfig /renew
+IP Address...: 10.10.10.6
+Default Gateway...: 10.10.10.2
+DNS Server...: 8.8.8.8
+```
+Baseline confirmed: correct gateway and DNS from the legitimate server.
+
+### 3. Connect the rogue device to an untrusted access port and repeat lease renewal
+
+With the rogue device active on the same VLAN:
+```
+C:\>ipconfig /release
+   IP Address...: 0.0.0.0
+   Default Gateway...: 0.0.0.0
+
+C:\>ipconfig /renew
+   IP Address...: 10.10.10.6
+   Default Gateway...: 10.10.10.2
+   DNS Server...: 8.8.8.8
+
+C:\>ipconfig /release
+C:\>ipconfig /renew
+   IP Address...: 10.10.10.8
+   Default Gateway...: 10.10.10.2
+   DNS Server...: 8.8.8.8
+```
+Across multiple release/renew cycles — the assigned IP address itself varies between attempts (`.6`, then `.8`, normal pool allocation behavior) — but the **gateway and DNS server are correct and unchanged every single time**. At no point did the client receive the rogue device's values (`10.10.10.99` / `1.1.1.1`).
+
+### 4. Confirm via the DHCP snooping binding table that only legitimate leases were ever tracked
+
+```
+Switch(config-if)#do sh ip dhcp snooping binding
+MacAddress          IpAddress       Lease(sec)  Type           VLAN  Interface
+------------------  --------------  ----------  -------------  ----  --------------------
+00:60:3E:81:0D:01   10.10.10.7      0           dhcp-snooping  10    FastEthernet0/3
+00:60:2F:D1:0B:4E    10.10.10.8     0           dhcp-snooping  10    FastEthernet0/4
+Total number of bindings: 2
+```
+Only two bindings exist, both tracked as legitimate `dhcp-snooping` entries tied to known client MAC addresses on known ports — nothing from the rogue device appears anywhere in the table, confirming its offers never completed a lease with any client.
+
+---
+
+## Root Cause (of the simulated scenario)
+
+Not applicable — this was a controlled, deliberate re-creation of the original incident to validate the fix, not an unplanned fault.
+
+---
+
+## Resolution
+
+No remediation was required. DHCP snooping, correctly scoped to VLANs 10/20/30 with only genuine infrastructure ports marked trusted, silently dropped the rogue device's offers at the switch before they could ever reach a client — exactly as designed. The legitimate client retained a correct, working lease throughout every test cycle, even with an active rogue DHCP server present on the same broadcast domain.
+
+---
+
+## Prevention / Design Notes
+
+- This test directly validates the fix for the original incident that motivated this entire redesign: *"only the legitimate DHCP server may hand out leases; anything else plugged into an access port must be blocked automatically."*
+- Unlike port security (which protects based on *which device* is connected), DHCP snooping protects the *entire VLAN*, regardless of which specific port the rogue device or the victim client are on — confirmed here by testing the rogue device and the legitimate client on two different ports.
+- **Recommendation:** periodically audit `show ip dhcp snooping` trusted-interface lists after any physical re-cabling or topology change — an infrastructure port accidentally left untrusted (or a new rogue-adjacent port accidentally marked trusted) would silently reopen this exact vulnerability. This was in fact discovered as a real gap during initial DHCP snooping configuration on this network (a peer-switch trunk port was initially missed from the trusted list), underscoring that this check should be routine, not one-time.
