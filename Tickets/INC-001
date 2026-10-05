@@ -1,0 +1,74 @@
+# INC-001: HSRP Core Switch Failover Test
+
+**Status:** Resolved — redundancy confirmed working as designed
+
+| Field | Detail |
+|---|---|
+| **Severity** | Sev3 — planned failover validation test, redundant path present by design |
+| **Time Detected** | [fill in] |
+| **Symptoms** | Brief, expected interruption to Sales and IT VLAN traffic during the Core A outage; Finance (already Active on Core B) unaffected |
+| **Diagnostic Steps** | 1. Attempted `int range fa0/1-fa0/3` on Core A — rejected (`Invalid input`); Packet Tracer requires comma-separated interfaces rather than a dash range in this context. Used `int range fa0/1,fa0/2,fa0/3` instead.<br>2. Shut down those three interfaces — Core A's links to Core B (Fa0/1), Edge Router (Fa0/2), and the access-layer trunk (Fa0/3). Core A's dedicated Monitoring Server port was intentionally left untouched, so this simulates loss of Core A's upstream/downstream reachability rather than a full power failure.<br>3. Started a continuous ping from an IT VLAN host (PC3) to a Sales VLAN host (10.10.10.6) to observe real packet loss during the transition.<br>4. Confirmed on Core A's own log: OSPF adjacencies to Core B (10.255.255.5) and Edge Router (203.0.113.1) dropped `FULL to DOWN`; Vlan10 and Vlan30 SVIs went line-protocol-down (Vlan20 stayed up locally via the untouched Monitoring Server port).<br>5. Confirmed on Core B: OSPF adjacency to Core A (10.255.255.1) dropped, immediately followed by `HSRP-6-STATECHANGE: Vlan10 Grp 10 state Standby -> Active` and the same for Vlan20. `show standby br` confirmed Core B Active on all three VIPs, with Core A's status showing as "unknown" (adjacency lost). |
+| **Root Cause** | N/A — deliberate fault injection to validate HSRP redundancy, not a misconfiguration |
+| **Resolution** | Re-enabled Core A's three interfaces (`no shutdown`). OSPF adjacency with Core B recovered (`LOADING to FULL`). Because `preempt` is configured on Core A for Sales/IT, Core B's log showed `Vlan10/Vlan20 Grp state Speak -> Standby` as Core A reclaimed Active automatically. Final `show standby br` on Core B confirmed Core A Active again for Sales/IT, Core B correctly back to Standby for those two, Finance undisturbed throughout. |
+| **Time to Recover** | 4 consecutive dropped pings (~4 seconds at default 1/sec interval) before replies resumed — well within HSRP's default 10-second hold timer. |
+| **Prevention / Recommendation** | Default HSRP timers produced acceptable failover for ICMP; for more latency-sensitive traffic, consider tuning hello/hold timers lower. Note: a genuinely clean "every interface down" test (rather than the 3 specific uplinks used here) would more fully simulate total device loss — worth repeating as a follow-up test if time allows. |
+
+## Known Platform Quirk (observed, not a config bug)
+
+Core A's own log showed `HSRP-6-STATECHANGE: Vlan30 Grp 30 state Standby -> Active` immediately after Vlan30's line protocol went down on that same device — logically inconsistent, since a switch shouldn't become HSRP Active on an interface that just failed. This is very likely a Packet Tracer HSRP simulation inaccuracy rather than a real design issue; included here for documentation honesty rather than presented as a clean, fully-explained result.
+
+## Evidence
+
+**Core A — fault triggered:**
+```
+CoreA(config)#int range fa0/1,fa0/2,fa0/3
+CoreA(config-if-range)#shutdown
+
+*Mar 01, 00:29:05: %LINK-5-CHANGED: Interface FastEthernet0/1, changed state to administratively down
+*Mar 01, 00:29:05: %OSPF-5-ADJCHG: Process 1, Nbr 10.255.255.5 on FastEthernet0/1 from FULL to DOWN, Neighbor Down: Interface down or detached
+*Mar 01, 00:29:05: %LINK-5-CHANGED: Interface FastEthernet0/2, changed state to administratively down
+*Mar 01, 00:29:05: %OSPF-5-ADJCHG: Process 1, Nbr 203.0.113.1 on FastEthernet0/2 from FULL to DOWN, Neighbor Down: Interface down or detached
+*Mar 01, 00:29:05: %LINK-5-CHANGED: Interface FastEthernet0/3, changed state to administratively down
+*Mar 01, 00:29:05: %LINEPROTO-5-UPDOWN: Line protocol on Interface Vlan10, changed state to down
+*Mar 01, 00:29:05: %LINEPROTO-5-UPDOWN: Line protocol on Interface Vlan30, changed state to down
+```
+
+**Core B — takes over:**
+```
+%LINK-3-UPDOWN: Interface FastEthernet0/1, changed state to down
+%OSPF-5-ADJCHG: Process 1, Nbr 10.255.255.1 on FastEthernet0/1 from FULL to DOWN, Neighbor Down: Interface down or detached
+%HSRP-6-STATECHANGE: Vlan10 Grp 10 state Standby -> Active
+%HSRP-6-STATECHANGE: Vlan20 Grp 20 state Standby -> Active
+
+CoreB#show standby brief
+Interface   Grp  Pri P State    Active    Standby   Virtual IP
+V110        10   100   Active   local     unknown   10.10.10.2
+V120        20   100   Active   local     unknown   10.10.20.2
+V130        30   110 P Active   local     10.10.30.1 10.10.30.2
+```
+
+**Ping evidence (PC3, IT VLAN → 10.10.10.6):**
+```
+Reply from 10.10.10.6: bytes=32 time<1ms TTL=127
+Reply from 10.10.10.6: bytes=32 time<1ms TTL=127
+Request timed out.
+Request timed out.
+Request timed out.
+Request timed out.
+Reply from 10.10.10.6: bytes=32 time<1ms TTL=127
+Reply from 10.10.10.6: bytes=32 time<1ms TTL=127
+```
+
+**Restoration — Core B falls back, confirms Core A reclaimed Active:**
+```
+%LINK-5-CHANGED: Interface FastEthernet0/1, changed state to up
+%HSRP-6-STATECHANGE: Vlan10 Grp 10 state Speak -> Standby
+%HSRP-6-STATECHANGE: Vlan20 Grp 20 state Speak -> Standby
+%OSPF-5-ADJCHG: Process 1, Nbr 10.255.255.1 on FastEthernet0/1 from LOADING to FULL
+
+CoreB#show standby brief
+Interface   Grp  Pri P State    Active     Standby   Virtual IP
+V110        10   100   Standby  10.10.10.1 local     10.10.10.2
+V120        20   100   Standby  10.10.20.1 local     10.10.20.2
+V130        30   110 P Active   local      10.10.30.1 10.10.30.2
+```
