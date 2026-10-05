@@ -1,0 +1,75 @@
+! =====================================================================
+! Cyber Labs — Backup WAN Router (2901)
+! Secondary OSPF path: Edge Router <-> Branch Router, used only on primary failure
+! =====================================================================
+
+hostname BackupWANRouter
+!
+! NOTE: "no ip cef" / "no ipv6 cef" retained deliberately — matches the
+! platform-specific setting used on Edge Router in this Packet Tracer build.
+no ip cef
+no ipv6 cef
+!
+service timestamps log datetime msec
+!
+ip domain-name Cyber.labs
+username admin privilege 15 secret 5 $1$mERr$Pq3/lr0agnISq0fxb9TUZ0
+!
+ip ssh version 2
+line con 0
+line aux 0
+line vty 0 4
+ login local
+ transport input ssh
+line vty 5 15
+ login local
+ transport input ssh
+!
+spanning-tree mode pvst
+!
+! ---------------------------------------------------------------------
+! Interfaces
+! ---------------------------------------------------------------------
+interface GigabitEthernet0/0
+ description Unused-spare
+ no ip address
+ duplex auto
+ speed auto
+ shutdown
+!
+interface GigabitEthernet0/1
+ description Unused-spare
+ no ip address
+ duplex auto
+ speed auto
+ shutdown
+!
+interface Serial0/0/0
+ description Link-to-EdgeRouter
+ ip address 10.255.255.10 255.255.255.252
+!
+interface Serial0/0/1
+ description Link-to-BranchRouter
+ ip address 10.255.255.17 255.255.255.252
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+! ---------------------------------------------------------------------
+! Routing — OSPF Area 0
+! ---------------------------------------------------------------------
+router ospf 1
+ log-adjacency-changes
+ network 10.255.255.8 0.0.0.3 area 0
+ network 10.255.255.16 0.0.0.3 area 0
+!
+ip classless
+!
+! ---------------------------------------------------------------------
+! Monitoring
+! ---------------------------------------------------------------------
+snmp-server community CYBERLABS.RO RO
+logging host 10.10.20.50
+!
+end
