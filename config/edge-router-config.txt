@@ -1,0 +1,101 @@
+! =====================================================================
+! Cyber Labs — Edge Router (ISR4321)
+! Single controlled internet exit (NAT/PAT), OSPF Area 0 hub for HQ + Branch
+! =====================================================================
+
+hostname EdgeRouter
+!
+! NOTE: "no ip cef" / "no ipv6 cef" retained deliberately — required on this
+! Packet Tracer platform for NAT overload (PAT) to function correctly.
+no ip cef
+no ipv6 cef
+!
+service timestamps log datetime msec
+!
+ip domain-name Cyber.labs
+username admin privilege 15 secret 5 $1$mERr$5.a6P4JqbNiMX01usIfka/
+!
+ip ssh version 2
+line con 0
+line aux 0
+line vty 0 4
+ login local
+ transport input ssh
+line vty 5 15
+ login local
+ transport input ssh
+!
+spanning-tree mode pvst
+!
+! ---------------------------------------------------------------------
+! Interfaces
+! ---------------------------------------------------------------------
+interface GigabitEthernet0/0/0
+ description Link-to-CoreB
+ ip address 10.255.255.6 255.255.255.252
+ ip nat inside
+ duplex auto
+ speed auto
+!
+interface GigabitEthernet0/0/1
+ description Link-to-CoreA
+ ip address 10.255.255.2 255.255.255.252
+ ip nat inside
+ duplex auto
+ speed auto
+!
+interface Serial0/1/0
+ description Link-to-BranchRouter-Primary
+ ip address 10.255.255.13 255.255.255.252
+ ip nat inside
+ clock rate 2000000
+!
+interface Serial0/1/1
+ description Link-to-BackupWANRouter
+ ip address 10.255.255.9 255.255.255.252
+ ip nat inside
+ clock rate 2000000
+!
+interface Serial0/2/0
+ description Link-to-ISP-OUTSIDE
+ ip address 203.0.113.1 255.255.255.252
+ ip nat outside
+ clock rate 2000000
+!
+interface Serial0/2/1
+ description Unused-spare
+ no ip address
+ clock rate 2000000
+ shutdown
+!
+interface Vlan1
+ no ip address
+ shutdown
+!
+! ---------------------------------------------------------------------
+! Routing — OSPF Area 0 (advertises default route to Core A/B + Branch)
+! ---------------------------------------------------------------------
+router ospf 1
+ log-adjacency-changes
+ network 10.255.255.0 0.0.0.3 area 0
+ network 10.255.255.4 0.0.0.3 area 0
+ network 10.255.255.8 0.0.0.3 area 0
+ network 10.255.255.12 0.0.0.3 area 0
+ default-information originate
+!
+ip classless
+ip route 0.0.0.0 0.0.0.0 203.0.113.2
+!
+! ---------------------------------------------------------------------
+! NAT — single controlled exit point (PAT overload)
+! ---------------------------------------------------------------------
+access-list 1 permit 10.0.0.0 0.255.255.255
+ip nat inside source list 1 interface Serial0/2/0 overload
+!
+! ---------------------------------------------------------------------
+! Monitoring
+! ---------------------------------------------------------------------
+snmp-server community CYBERLABS.RO RO
+logging host 10.10.20.50
+!
+end
